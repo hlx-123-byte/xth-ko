@@ -1,0 +1,53 @@
+name: Build xth_ko (kernel module)
+
+# 手动触发，避免回提交产物导致循环。
+# 用 KernelSU ddk 容器编 arm64 external module；产物回提交到 dist/xth_ko.ko，
+# 便于通过 api.github.com 稳定取回（release/artifact CDN 在部分网络不可达）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android12-5.10-20260313
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build xth_ko.ko
+        run: |
+          set -e
+          echo "KDIR=$KDIR"
+          cd kernel
+          if [ -x "$KDIR/scripts/config" ]; then
+            "$KDIR/scripts/config" --file "$KDIR/.config" -d MODVERSIONS || true
+            make -C "$KDIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig >/dev/null || true
+          fi
+          make -j"$(nproc)" KBUILD_MODPOST_WARN=1
+          llvm-strip -d xth_ko.ko || true
+          echo "=== modinfo ==="
+          llvm-readelf -p .modinfo xth_ko.ko | grep -E 'name|vermagic|license' || true
+          echo "=== sections ==="
+          llvm-readelf -SW xth_ko.ko | grep -E '__versions|\.modinfo' || true
+
+      - name: Upload artifact (backup)
+        uses: actions/upload-artifact@v7
+        with:
+          name: xth_ko
+          path: kernel/xth_ko.ko
+
+      - name: Commit .ko back to dist/
+        run: |
+          mkdir -p dist
+          cp kernel/xth_ko.ko dist/xth_ko.ko
+          git config user.name "xth-ci"
+          git config user.email "ci@xth.local"
+          git add -f dist/xth_ko.ko
+          git commit -m "build: xth_ko.ko [skip ci]" || echo "nothing to commit"
+          git push || true
