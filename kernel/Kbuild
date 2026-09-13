@@ -1,0 +1,2 @@
+obj-m += xth_ko.o
+ccflags-y += -Wno-unused-function -Wno-unused-variable
