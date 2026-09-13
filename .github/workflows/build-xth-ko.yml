@@ -1,8 +1,7 @@
 name: Build xth_ko (kernel module)
 
-# 手动触发，避免回提交产物导致循环。
-# 用 KernelSU ddk 容器编 arm64 external module；产物回提交到 dist/xth_ko.ko，
-# 便于通过 api.github.com 稳定取回（release/artifact CDN 在部分网络不可达）。
+# 手动触发，避免循环。用 KernelSU ddk 容器编 arm64 external module。
+# 产物通过 Contents API 写回 dist/xth_ko.ko（api.github.com 稳定可达）。
 on:
   workflow_dispatch:
 
@@ -35,6 +34,8 @@ jobs:
           llvm-readelf -p .modinfo xth_ko.ko | grep -E 'name|vermagic|license' || true
           echo "=== sections ==="
           llvm-readelf -SW xth_ko.ko | grep -E '__versions|\.modinfo' || true
+          echo "=== size ==="
+          ls -l xth_ko.ko
 
       - name: Upload artifact (backup)
         uses: actions/upload-artifact@v7
@@ -42,12 +43,20 @@ jobs:
           name: xth_ko
           path: kernel/xth_ko.ko
 
-      - name: Commit .ko back to dist/
+      - name: Publish .ko via Contents API
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p dist
-          cp kernel/xth_ko.ko dist/xth_ko.ko
-          git config user.name "xth-ci"
-          git config user.email "ci@xth.local"
-          git add -f dist/xth_ko.ko
-          git commit -m "build: xth_ko.ko [skip ci]" || echo "nothing to commit"
-          git push || true
+          set -e
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/dist/xth_ko.ko"
+          B64="$(base64 -w0 kernel/xth_ko.ko)"
+          SHA="$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API" | sed -n 's/.*"sha": *"\([^"]*\)".*/\1/p' | head -1)"
+          if [ -n "$SHA" ]; then
+            BODY="{\"message\":\"build: xth_ko.ko\",\"content\":\"$B64\",\"sha\":\"$SHA\",\"branch\":\"main\"}"
+          else
+            BODY="{\"message\":\"build: xth_ko.ko\",\"content\":\"$B64\",\"branch\":\"main\"}"
+          fi
+          curl -s -X PUT -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -d "$BODY" "$API" | head -c 400
+          echo
+          echo "published to dist/xth_ko.ko"
